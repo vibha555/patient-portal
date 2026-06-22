@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        CI = 'true'
-        PROJECT_DIR = '.'
-        DOCKER_IMAGE = 'vibha5552/patient-portal'
+        DOCKER_IMAGE = 'vibha5552/patientservice'
         IMAGE_TAG = "${BUILD_NUMBER}"
+        LATEST_TAG = 'latest'
+        DOCKER_CREDENTIALS = 'dockerhub_creds'
     }
 
     options {
@@ -15,127 +15,56 @@ pipeline {
     }
 
     stages {
-
         stage('Git Checkout') {
             steps {
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/vibha555/patient-portal.git'
+                    ]]
+                ])
             }
         }
 
-        stage('Detect Project Directory') {
-            steps {
-                script {
-                    if (fileExists('package.json')) {
-                        env.PROJECT_DIR = '.'
-                    } else if (fileExists('patient-portal/package.json')) {
-                        env.PROJECT_DIR = 'patient-portal'
-                    } else {
-                        error('Could not find patient-portal package.json.')
-                    }
-
-                    echo "Using project directory: ${env.PROJECT_DIR}"
-                }
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                dir("${env.PROJECT_DIR}") {
-                    sh '''
-                        node --version
-                        npm --version
-
-                        if [ -f package-lock.json ]; then
-                            npm ci
-                        else
-                            npm install
-                        fi
-                    '''
-                }
-            }
-        }
-
-        stage('Lint') {
-            steps {
-                dir("${env.PROJECT_DIR}") {
-                    sh 'npm run lint'
-                }
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                dir("${env.PROJECT_DIR}") {
-                    sh 'npm run test:coverage'
-                }
-            }
-        }
-
-        stage('Build') {
-            steps {
-                dir("${env.PROJECT_DIR}") {
-                    sh 'npm run build'
-                }
-            }
-        }
-
-        stage('Archive Build Artifacts') {
-            steps {
-                archiveArtifacts artifacts: "${env.PROJECT_DIR}/dist/**",
-                                  fingerprint: true
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                dir("${env.PROJECT_DIR}") {
-                    sh '''
-                        docker build -t $DOCKER_IMAGE:$IMAGE_TAG .
-                        docker tag $DOCKER_IMAGE:$IMAGE_TAG $DOCKER_IMAGE:latest
-                    '''
-                }
-            }
-        }
-
-        stage('Docker Login') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )
-                ]) {
-                    sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                    '''
-                }
-            }
-        }
-
-        stage('Push Docker Image') {
+        stage('Docker Build Image') {
             steps {
                 sh '''
-                    docker push $DOCKER_IMAGE:$IMAGE_TAG
-                    docker push $DOCKER_IMAGE:latest
+                    docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} .
+                    docker tag ${DOCKER_IMAGE}:${IMAGE_TAG} ${DOCKER_IMAGE}:${LATEST_TAG}
                 '''
+            }
+        }
+
+        stage('Push Image to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+                        docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
+                        docker push ${DOCKER_IMAGE}:${LATEST_TAG}
+                        docker logout
+                    '''
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'Patient Portal pipeline completed successfully.'
+            echo "Pipeline completed. Images pushed: ${DOCKER_IMAGE}:${IMAGE_TAG} and ${DOCKER_IMAGE}:${LATEST_TAG}"
         }
-
         failure {
-            echo 'Patient Portal pipeline failed.'
+            echo 'Pipeline failed. Check stage logs for details.'
         }
-
         always {
             sh '''
-                docker rmi $DOCKER_IMAGE:$IMAGE_TAG || true
-                docker rmi $DOCKER_IMAGE:latest || true
+                docker rmi ${DOCKER_IMAGE}:${IMAGE_TAG} || true
+                docker rmi ${DOCKER_IMAGE}:${LATEST_TAG} || true
             '''
             cleanWs(deleteDirs: true, disableDeferredWipeout: true)
         }
