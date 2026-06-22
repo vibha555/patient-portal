@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = 'vibha5552/patientservice'
+        DOCKER_IMAGE = 'vibha5552/patient-portal'
         IMAGE_TAG = "${BUILD_NUMBER}"
         LATEST_TAG = 'latest'
         DOCKER_CREDENTIALS = 'dockerhub_creds'
