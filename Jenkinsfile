@@ -3,69 +3,140 @@ pipeline {
 
     environment {
         CI = 'true'
+        PROJECT_DIR = '.'
+        DOCKER_IMAGE = 'vibha5552/patient-portal'
+        IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '20'))
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         timestamps()
     }
 
     stages {
+
         stage('Git Checkout') {
             steps {
                 checkout scm
             }
         }
 
+        stage('Detect Project Directory') {
+            steps {
+                script {
+                    if (fileExists('package.json')) {
+                        env.PROJECT_DIR = '.'
+                    } else if (fileExists('patient-portal/package.json')) {
+                        env.PROJECT_DIR = 'patient-portal'
+                    } else {
+                        error('Could not find patient-portal package.json.')
+                    }
+
+                    echo "Using project directory: ${env.PROJECT_DIR}"
+                }
+            }
+        }
+
         stage('Install Dependencies') {
             steps {
-                sh '''
-                    node --version
-                    npm --version
+                dir("${env.PROJECT_DIR}") {
+                    sh '''
+                        node --version
+                        npm --version
 
-                    if [ -f package-lock.json ]; then
-                        npm ci
-                    else
-                        npm install
-                    fi
-                '''
+                        if [ -f package-lock.json ]; then
+                            npm ci
+                        else
+                            npm install
+                        fi
+                    '''
+                }
             }
         }
 
         stage('Lint') {
             steps {
-                sh 'npm run lint'
+                dir("${env.PROJECT_DIR}") {
+                    sh 'npm run lint'
+                }
             }
         }
 
         stage('Unit Tests') {
             steps {
-                sh 'npm run test:coverage'
+                dir("${env.PROJECT_DIR}") {
+                    sh 'npm run test:coverage'
+                }
             }
         }
 
         stage('Build') {
             steps {
-                sh 'npm run build'
+                dir("${env.PROJECT_DIR}") {
+                    sh 'npm run build'
+                }
             }
         }
 
         stage('Archive Build Artifacts') {
             steps {
-                archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: false, fingerprint: true
+                archiveArtifacts artifacts: "${env.PROJECT_DIR}/dist/**",
+                                  fingerprint: true
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    sh '''
+                        docker build -t $DOCKER_IMAGE:$IMAGE_TAG .
+                        docker tag $DOCKER_IMAGE:$IMAGE_TAG $DOCKER_IMAGE:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                sh '''
+                    docker push $DOCKER_IMAGE:$IMAGE_TAG
+                    docker push $DOCKER_IMAGE:latest
+                '''
             }
         }
     }
 
     post {
         success {
-            echo 'Patient portal pipeline completed successfully.'
+            echo 'Patient Portal pipeline completed successfully.'
         }
+
         failure {
-            echo 'Patient portal pipeline failed. Review stage logs for details.'
+            echo 'Patient Portal pipeline failed.'
         }
+
         always {
+            sh '''
+                docker rmi $DOCKER_IMAGE:$IMAGE_TAG || true
+                docker rmi $DOCKER_IMAGE:latest || true
+            '''
             cleanWs(deleteDirs: true, disableDeferredWipeout: true)
         }
     }
